@@ -52,6 +52,33 @@ class NetworkPrinter {
     }
   }
 
+  /// Flushes every queued byte and closes the connection gracefully, honoring
+  /// TCP flow control so the ENTIRE payload reaches the printer before the
+  /// socket is torn down.
+  ///
+  /// Use this instead of [disconnect] on the print path. `disconnect` calls
+  /// `Socket.destroy()`, an abortive (RST) close that silently discards any
+  /// bytes still sitting in the send buffer. For a small job a fixed post-send
+  /// delay is enough for the buffer to drain, but a large job — e.g. a long
+  /// receipt whose CJK lines are sent as raster bit-images — cannot drain in a
+  /// fixed window, so `destroy()` truncates the tail and the print cuts off.
+  /// `flush()` hands the buffered bytes to the OS and `close()` sends the FIN
+  /// only after they have all been transmitted (TCP retransmits until ACKed),
+  /// so the payload is delivered regardless of its size. On error/timeout the
+  /// socket is destroyed to avoid leaking it, and the error is rethrown so the
+  /// caller can fall back or report failure.
+  Future<void> flushAndClose({
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    try {
+      await _socket.flush().timeout(timeout);
+      await _socket.close().timeout(timeout);
+    } catch (_) {
+      _socket.destroy();
+      rethrow;
+    }
+  }
+
   // ************************ Printer Commands ************************
   void reset() {
     _socket.add(_generator.reset());
